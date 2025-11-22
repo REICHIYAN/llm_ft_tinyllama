@@ -1,107 +1,96 @@
 
-# TinyLlama Fine-Tuning Toolkit (Updated — No vLLM)
+# TinyLlama Fine-Tuning Toolkit
 
----
+## Overview
 
-## 🌐 Overview
-
-This repository provides a **compact, end-to-end fine-tuning and evaluation toolkit**
-for **TinyLlama-1.1B-Chat-v1.0**, enabling reproducible experiments across:
+This repository provides a compact toolkit for fine‑tuning and evaluating **TinyLlama‑1.1B‑Chat‑v1.0**.  
+It supports:
 
 - Full Fine-Tuning (FT)
 - LoRA
 - QLoRA
-- RAG evaluation (HuggingFace embeddings via LlamaIndex)
-- Unified model comparison utilities
+- RAG evaluation using LlamaIndex + HuggingFace embeddings
+- Model comparison utilities
 
-vLLM is **not used in this project** and all related descriptions have been removed.
-
-Prefix Tuning is intentionally excluded to keep the stack minimal.
+Prefix Tuning is not included.
 
 ---
 
-## 🏗️ Architecture & Tech Stack
+## Architecture
 
 ```
-┌───────────────────────────────────────────┐
-│                Training Layer             │
-│  • Full FT (HF Trainer)                   │
-│  • LoRA (PEFT)                            │
-│  • QLoRA (4bit + LoRA)                    │
-└───────────────┬───────────────────────────┘
-                │
-┌───────────────▼───────────────────────────┐
-│               Model Outputs               │
-│  models/ft_full/                          │
-│  models/ft_lora/                          │
-│  models/ft_qlora/                         │
-└───────────────┬───────────────────────────┘
-                │
-┌───────────────▼───────────────────────────┐
-│            Evaluation Utilities           │
-│  • app_rag_compare.py (RAG pipeline)      │
-│  • compare_adapters.py                    │
-└────────────────────────────────────────────┘
+Training
+  • Full FT
+  • LoRA
+  • QLoRA
+
+Model Outputs
+  • models/ft_full/
+  • models/ft_lora/
+  • models/ft_qlora/
+
+Evaluation
+  • app_rag_compare.py
+  • compare_adapters.py
 ```
 
 ---
 
-## 📚 Fine-Tuning Methods
+## Fine-Tuning Methods
 
-### **1. Full Fine-Tuning**
+### 1. Full Fine-Tuning  
+Updates **all parameters** of the model.  
+Provides the highest model capacity but requires more GPU memory.
 
-```bash
+```
 python train_full.py
 ```
 
 ---
 
-### **2. LoRA**
+### 2. LoRA  
+Adds low‑rank matrices to selected layers and **trains only those parameters**,  
+keeping the base model frozen.  
+Efficient in memory and compute.
 
-```bash
+```
 python train_lora.py
 ```
 
 ---
 
-### **3. QLoRA**
+### 3. QLoRA  
+Quantizes the base model to **4‑bit** while training LoRA parameters in higher precision.  
+Minimizes memory usage while achieving performance close to LoRA.
 
-```bash
+```
 python train_qlora.py
 ```
 
 ---
 
-## 🔍 RAG Evaluation (Updated)
+## RAG Evaluation
 
-This project includes a simple RAG demo using **LlamaIndex** and **HuggingFace embeddings**.
+This project includes a simple RAG pipeline using LlamaIndex and HuggingFace embeddings.
 
-We use:
-
-- `llama-index-embeddings-huggingface`
-- `sentence-transformers`
-
-Example (inside `app_rag_compare.py`):
+Example inside `app_rag_compare.py`:
 
 ```python
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-
-embed_model = HuggingFaceEmbedding(
-    model_name="sentence-transformers/all-MiniLM-L6-v2"
-)
+embed_model = HuggingFaceEmbedding("sentence-transformers/all-MiniLM-L6-v2")
 ```
 
 Run:
 
-```bash
+```
 python app_rag_compare.py --docs_dir docs --question "Explain LoRA."
 ```
 
 ---
 
-## 🧭 Model Comparison
+## Model Comparison
 
-```bash
+```
 python compare_adapters.py
 ```
 
@@ -113,7 +102,7 @@ Compares:
 
 ---
 
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 llm_ft_tinyllama/
@@ -130,16 +119,13 @@ llm_ft_tinyllama/
 │   └── ft_qlora/
 │
 ├── docs/
-│
 └── data/
     └── toy_qa.jsonl
 ```
 
 ---
 
-## 🛠 Requirements
-
-The following are required:
+## Requirements
 
 ```
 torch>=2.1.0
@@ -157,19 +143,12 @@ langchain-openai>=0.1.0
 llama-index>=0.10.0
 
 python-dotenv>=1.0.0
-
 llama-index-embeddings-huggingface
 sentence-transformers
 ```
 
 Install:
 
-```bash
+```
 pip install -r requirements.txt
 ```
-
----
-
-## 🙌 Final Notes
-
-This repository is a **clean, extensible baseline** for TinyLlama fine‑tuning and LlamaIndex‑based RAG experiments.
