@@ -2,195 +2,165 @@
 # -*- coding: utf-8 -*-
 
 """
-RAG + Model Comparison demo for TinyLlama FT / LoRA / QLoRA.
+RAG + Model Comparison (LangChain, local HF models)
 
-- Uses LlamaIndex for retrieval (local HuggingFace embedding)
-- Uses vLLM (OpenAI-compatible server) for generation
-
-No OpenAI API key is required.
-Prefix Tuning is completely excluded.
+- Retrieval → LangChain
+- Embedding → HuggingFace (BAAI/bge-small)
+- LLM → Local TinyLlama (Full-FT / LoRA / QLoRA)
+- No vLLM
+- No OpenAI API
 """
 
 import argparse
-from typing import Dict, List
+import os
+from typing import List
+import gc
 
-from langchain_openai import ChatOpenAI
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import PeftModel
 
-from llama_index.core import SimpleDirectoryReader, VectorStoreIndex, Settings
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+# LangChain
+from langchain_core.prompts import PromptTemplate
+from langchain_core.runnables import RunnablePassthrough
+from langchain_chains.combine_documents import create_stuff_documents_chain
+from langchain_chains.retrieval import create_retrieval_chain
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+
+# 自作 LangChain LLM wrapper
+from local_hf_chat_model import LocalHFChatModel
 
 
-# ---- vLLM model endpoints (edit here to match your environment) ----
-MODEL_CONFIGS: Dict[str, Dict[str, str]] = {
-    "ft_full": {
-        "model": "ft_full_tinyllama",
-        "base_url": "http://localhost:8001/v1",
-    },
-    "ft_lora": {
-        "model": "ft_lora_tinyllama",
-        "base_url": "http://localhost:8002/v1",
-    },
-    "ft_qlora": {
-        "model": "ft_qlora_tinyllama",
-        "base_url": "http://localhost:8003/v1",
-    },
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+MODEL_DIRS = {
+    "ft_full": os.path.join(REPO_ROOT, "models", "ft_full"),
+    "ft_lora": os.path.join(REPO_ROOT, "models", "ft_lora"),
+    "ft_qlora": os.path.join(REPO_ROOT, "models", "ft_qlora"),
 }
 
+BASE_MODEL = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# ---- RAG: Retriever (LlamaIndex + local embedding) ----
-def build_llamaindex_retriever(docs_dir: str, top_k: int = 3):
-    """Build a LlamaIndex retriever using a local HuggingFace embedding model."""
 
-    # ✅ Use local HuggingFace embedding instead of OpenAI
-    embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+# ----------------------------------------------------------------------
+#  Loaders
+# ----------------------------------------------------------------------
 
-    # Set as global default to avoid OpenAI usage
-    Settings.embed_model = embed_model
+def load_full_model():
+    return LocalHFChatModel.from_pretrained(MODEL_DIRS["ft_full"])
 
-    docs = SimpleDirectoryReader(docs_dir).load_data()
-    index = VectorStoreIndex.from_documents(docs, embed_model=embed_model)
-    retriever = index.as_retriever(similarity_top_k=top_k)
+
+def load_peft_model(key: str):
+    adapter_path = MODEL_DIRS[key]
+
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+    base = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL,
+        torch_dtype=torch.float16 if DEVICE == "cuda" else torch.float32,
+    ).to(DEVICE)
+
+    model = PeftModel.from_pretrained(base, adapter_path)
+    model.eval()
+
+    # LangChain wrapper
+    wrapper = LocalHFChatModel(model=model, tokenizer=tokenizer)
+    return wrapper
+
+
+def clear(model):
+    del model
+    gc.collect()
+    if DEVICE == "cuda":
+        torch.cuda.empty_cache()
+
+
+# ----------------------------------------------------------------------
+#  Build Retriever (LangChain)
+# ----------------------------------------------------------------------
+
+def build_retriever(docs_dir: str, top_k: int):
+    embed = HuggingFaceEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    texts = []
+    for fname in os.listdir(docs_dir):
+        path = os.path.join(docs_dir, fname)
+        if not os.path.isfile(path):
+            continue
+        with open(path, "r", encoding="utf-8") as f:
+            texts.append(f.read())
+
+    vectordb = FAISS.from_texts(texts, embedding=embed)
+    retriever = vectordb.as_retriever(search_kwargs={"k": top_k})
     return retriever
 
 
-def retrieve_context_chunks(retriever, question: str) -> List[str]:
-    """Retrieve top-k context chunks for a question."""
-    nodes = retriever.retrieve(question)
-    return [n.text for n in nodes]
+# ----------------------------------------------------------------------
+# Main
+# ----------------------------------------------------------------------
 
-
-# ---- vLLM-backed LLM (ChatOpenAI wrapper) ----
-def build_llm(model_key: str, temperature: float = 0.2) -> ChatOpenAI:
-    """
-    Build a ChatOpenAI client that talks to a vLLM OpenAI-compatible server.
-
-    We use:
-      - base_url from MODEL_CONFIGS[model_key]["base_url"]
-      - model    from MODEL_CONFIGS[model_key]["model"]
-    """
-    if model_key not in MODEL_CONFIGS:
-        raise ValueError(
-            f"Unknown model key: {model_key}. "
-            f"Available keys: {list(MODEL_CONFIGS.keys())}"
-        )
-
-    cfg = MODEL_CONFIGS[model_key]
-
-    llm = ChatOpenAI(
-        model=cfg["model"],
-        base_url=cfg["base_url"],
-        api_key="dummy-key",  # vLLM側で認証を見ていないなら何でもよい
-        temperature=temperature,
-    )
-    return llm
-
-
-# ---- Prompt construction ----
-def build_messages(question: str, context_chunks: List[str]) -> List[dict]:
-    """Build OpenAI-style chat messages for RAG prompt."""
-    context_str = "\n\n".join(f"[{i+1}] {chunk}" for i, chunk in enumerate(context_chunks))
-
-    system_msg = (
-        "You are a helpful assistant.\n"
-        "Use ONLY the given context to answer the user's question.\n"
-        "If the answer is not contained in the context, say that you don't know.\n"
-    )
-
-    user_msg = (
-        "Question:\n"
-        f"{question}\n\n"
-        "Context:\n"
-        f"{context_str}\n\n"
-        "Please answer in a concise way."
-    )
-
-    return [
-        {"role": "system", "content": system_msg},
-        {"role": "user", "content": user_msg},
-    ]
-
-
-# ---- CLI args ----
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="RAG + model comparison demo (TinyLlama FT / LoRA / QLoRA)"
-    )
-
-    parser.add_argument(
-        "--docs_dir",
-        type=str,
-        default="docs",
-        help="Directory containing source documents for RAG.",
-    )
-    parser.add_argument(
-        "--question",
-        type=str,
-        required=True,
-        help="Question to ask the RAG system.",
-    )
-    parser.add_argument(
-        "--top_k",
-        type=int,
-        default=3,
-        help="Number of context chunks to retrieve.",
-    )
-    parser.add_argument(
-        "--models",
-        type=str,
-        default="ft_full",
-        help=(
-            "Comma-separated list of model keys to query. "
-            "Available: " + ",".join(MODEL_CONFIGS.keys())
-        ),
-    )
-
-    return parser.parse_args()
-
-
-# ---- main ----
 def main():
-    args = parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--question", required=True)
+    parser.add_argument("--docs_dir", default="docs")
+    parser.add_argument("--top_k", type=int, default=3)
+    parser.add_argument("--models", default="ft_full,ft_lora,ft_qlora")
+    args = parser.parse_args()
 
-    # Parse model keys
-    model_keys = [m.strip() for m in args.models.split(",") if m.strip()]
-    for key in model_keys:
-        if key not in MODEL_CONFIGS:
-            raise ValueError(
-                f"Unknown model key: {key}. "
-                f"Available keys: {list(MODEL_CONFIGS.keys())}"
-            )
+    model_keys: List[str] = [m.strip() for m in args.models.split(",")]
 
-    print("=== RAG + Model Comparison ===")
-    print(f"Docs dir : {args.docs_dir}")
+    print("=== RAG + Model Comparison (LangChain + Local HF) ===")
+    print(f"Docs     : {args.docs_dir}")
     print(f"Question : {args.question}")
-    print(f"Top-k    : {args.top_k}")
     print(f"Models   : {model_keys}")
+    print(f"Device   : {DEVICE}")
     print()
 
-    # 1. Build retriever & get context
-    retriever = build_llamaindex_retriever(args.docs_dir, top_k=args.top_k)
-    context_chunks = retrieve_context_chunks(retriever, args.question)
+    # Build retriever
+    retriever = build_retriever(args.docs_dir, args.top_k)
 
-    print("=== Retrieved Context (top-k) ===")
-    for i, chunk in enumerate(context_chunks, start=1):
-        preview = chunk.replace("\n", " ")
-        if len(preview) > 200:
-            preview = preview[:200] + "..."
-        print(f"[{i}] {preview}")
-    print()
+    # Prompt
+    template = """Use ONLY the context below to answer.
 
-    # 2. Query each model with the same RAG prompt
+Question: {question}
+
+Context:
+{context}
+
+Answer:
+"""
+
+    prompt = PromptTemplate(
+        input_variables=["question", "context"],
+        template=template,
+    )
+
+    def combine_context(docs):
+        return "\n\n".join([d.page_content for d in docs])
+
     for key in model_keys:
-        llm = build_llm(key)
-        messages = build_messages(args.question, context_chunks)
-
         print("=" * 70)
-        print(f"Model: {key} (id={MODEL_CONFIGS[key]['model']}, base_url={MODEL_CONFIGS[key]['base_url']})")
+        print(f"Model: {key}")
         print("-" * 70)
 
-        resp = llm.invoke(messages)
-        print(resp.content)
+        if key == "ft_full":
+            llm = load_full_model()
+        else:
+            llm = load_peft_model(key)
+
+        rag_chain = (
+            {
+                "context": retriever | combine_context,
+                "question": RunnablePassthrough()
+            }
+            | prompt
+            | llm
+        )
+
+        answer = rag_chain.invoke(args.question)
+        print(answer)
         print()
+
+        clear(llm)
 
     print("Done.")
 
