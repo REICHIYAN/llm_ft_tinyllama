@@ -33,7 +33,7 @@ import argparse
 import json
 import os
 from collections import defaultdict
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
 # Optional dependencies
@@ -52,11 +52,16 @@ except Exception:
     _HAS_RAGAS = False
 
 try:
-    # OpenAI Python SDK v1.x
     import openai
     _HAS_OPENAI = True
 except Exception:
     _HAS_OPENAI = False
+
+try:
+    from dotenv import load_dotenv
+    _HAS_DOTENV = True
+except Exception:
+    _HAS_DOTENV = False
 
 
 MODEL_KEYS = ["ft_full", "ft_lora", "ft_qlora"]
@@ -64,7 +69,6 @@ MODEL_KEYS = ["ft_full", "ft_lora", "ft_qlora"]
 
 @dataclass
 class Example:
-    """One evaluation example loaded from JSONL."""
     qid: str
     question: str
     contexts: List[Dict[str, str]]
@@ -75,7 +79,6 @@ class Example:
 
 @dataclass
 class ModelMetrics:
-    """Metrics aggregated per model."""
     judge_scores: List[float]
     hallucination_flags: List[bool]
     bert_f1_scores: List[float]
@@ -117,7 +120,6 @@ class ModelMetrics:
 
 
 def load_examples(path: str) -> List[Example]:
-    """Load evaluation examples from a JSONL file."""
     examples: List[Example] = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -126,26 +128,19 @@ def load_examples(path: str) -> List[Example]:
                 continue
             obj = json.loads(line)
             qid = obj.get("id", "")
-            question = obj["question"]
-            contexts = obj.get("contexts", [])
-            answers = obj["answers"]
-            reference = obj.get("reference_answer")
-            gold_doc_ids = obj.get("gold_doc_ids", [])
-            examples.append(
-                Example(
-                    qid=qid,
-                    question=question,
-                    contexts=contexts,
-                    answers=answers,
-                    reference_answer=reference,
-                    gold_doc_ids=gold_doc_ids,
-                )
+            ex = Example(
+                qid=qid,
+                question=obj["question"],
+                contexts=obj.get("contexts", []),
+                answers=obj["answers"],
+                reference_answer=obj.get("reference_answer"),
+                gold_doc_ids=obj.get("gold_doc_ids", []),
             )
+            examples.append(ex)
     return examples
 
 
 # ---------------- LLM-as-a-Judge utilities -----------------
-
 
 def call_judge_llm_openai(
     question: str,
@@ -154,72 +149,48 @@ def call_judge_llm_openai(
     model: str,
     temperature: float = 0.0,
 ) -> Dict[str, Any]:
-    """
-    Call OpenAI ChatCompletion as a judge.
 
-    Returns a dict:
-    {
-      "scores": {"ft_full": 8.5, "ft_lora": 8.0, "ft_qlora": 7.2},
-      "hallucinations": {"ft_full": false, "ft_lora": true, ...}
-    }
-
-    The prompt is simple and deterministic-oriented.
-    """
     prompt = (
         "You are an impartial evaluator.\n"
         "Given a question, supporting context, and three model answers, "
-        "rate each answer from 0 to 10 and mark whether it contains hallucinations "
-        "(content not supported by the context or obviously false).\n\n"
-        "Return a strict JSON object with keys 'scores' and 'hallucinations'.\n\n"
-        f"Question:\n{question}\n\n"
-        f"Context:\n{context}\n\n"
+        "rate each answer from 0 to 10 and mark whether it contains hallucinations.\n\n"
+        "Return ONLY valid JSON:\n"
+        "{\n"
+        '  "scores": {"ft_full": 0-10, "ft_lora": 0-10, "ft_qlora": 0-10},\n'
+        '  "hallucinations": {"ft_full": true/false, "ft_lora": true/false, "ft_qlora": true/false}\n'
+        "}\n\n"
+        f"Question:\n{question}\n\nContext:\n{context}\n\n"
     )
 
     for key in MODEL_KEYS:
-        ans = answers.get(key, "")
-        prompt += f"Answer ({key}):\n{ans}\n\n"
-
-    prompt += (
-        "Now respond ONLY with JSON, no extra text. Example:\n"
-        '{\"scores\": {\"ft_full\": 8.0, \"ft_lora\": 7.5, \"ft_qlora\": 7.0}, '
-        "\"hallucinations\": {\"ft_full\": false, \"ft_lora\": true, \"ft_qlora\": false}}\n"
-    )
+        prompt += f"Answer ({key}):\n{answers.get(key, '')}\n\n"
 
     resp = openai.ChatCompletion.create(
         model=model,
         messages=[{"role": "user", "content": prompt}],
         temperature=temperature,
     )
+
     content = resp["choices"][0]["message"]["content"]
     try:
-        data = json.loads(content)
-        return data
-    except json.JSONDecodeError:
-        # Fallback: if parsing fails, return empty; caller should skip
+        return json.loads(content)
+    except Exception:
         return {"scores": {}, "hallucinations": {}}
 
 
 # ---------------- RAGAS utilities -----------------
 
-
 def compute_ragas_faithfulness(
     examples: List[Example],
     per_model_answers: Dict[str, List[str]],
 ) -> Dict[str, Optional[float]]:
-    """
-    Compute RAGAS faithfulness per model.
-    Requires ragas + datasets and LLM / embeddings to be configured in ragas.
-    """
+
     if not _HAS_RAGAS:
         return {k: None for k in MODEL_KEYS}
 
-    results: Dict[str, Optional[float]] = {}
+    results = {}
     for model_key in MODEL_KEYS:
-        # Build HF Dataset for this model
-        questions: List[str] = []
-        answers: List[str] = []
-        contexts: List[List[str]] = []
-        ground_truths: List[str] = []
+        questions, answers, contexts, gts = [], [], [], []
 
         for ex, ans in zip(examples, per_model_answers[model_key]):
             if not ex.contexts:
@@ -227,9 +198,7 @@ def compute_ragas_faithfulness(
             questions.append(ex.question)
             answers.append(ans)
             contexts.append([c["text"] for c in ex.contexts])
-            # ground_truth: if reference is present, use that; else use answer itself as weak label
-            gt = ex.reference_answer if ex.reference_answer is not None else ans
-            ground_truths.append(gt)
+            gts.append(ex.reference_answer if ex.reference_answer else ans)
 
         if not questions:
             results[model_key] = None
@@ -240,22 +209,18 @@ def compute_ragas_faithfulness(
                 "question": questions,
                 "answer": answers,
                 "contexts": contexts,
-                "ground_truth": ground_truths,
+                "ground_truth": gts,
             }
         )
         ragas_res = ragas_evaluate(dataset, metrics=[ragas_faithfulness])
         results[model_key] = float(ragas_res["faithfulness"])
+
     return results
 
 
 # ---------------- BERTScore utilities -----------------
 
-
-def compute_bertscore(
-    refs: List[str],
-    cands: List[str],
-    lang: str = "en",
-) -> List[float]:
+def compute_bertscore(refs: List[str], cands: List[str], lang: str = "en") -> List[float]:
     if not _HAS_BERTSCORE:
         return []
     P, R, F1 = bert_score(cands, refs, lang=lang)
@@ -264,14 +229,11 @@ def compute_bertscore(
 
 # ---------------- Accuracy utilities -----------------
 
-
 def normalize_text(s: str) -> str:
-    """Simple normalization: strip, lowercase."""
     return " ".join(s.strip().lower().split())
 
 
 # ---------------- Main evaluation -----------------
-
 
 def evaluate_models(
     examples: List[Example],
@@ -279,31 +241,23 @@ def evaluate_models(
     bert_lang: str = "en",
     use_ragas: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
-    """
-    Main evaluation routine.
 
-    Returns:
-      {model_key: {metric_name: value}}
-    """
-    metrics: Dict[str, ModelMetrics] = {k: ModelMetrics() for k in MODEL_KEYS}
+    metrics = {k: ModelMetrics() for k in MODEL_KEYS}
+    answers_per_model = {k: [] for k in MODEL_KEYS}
+    refs_for_bertscore = {k: [] for k in MODEL_KEYS}
 
-    # Collect answers per model for RAGAS / BERTScore
-    answers_per_model: Dict[str, List[str]] = {k: [] for k in MODEL_KEYS}
-    refs_for_bertscore: Dict[str, List[str]] = {k: [] for k in MODEL_KEYS}
-
-    # --- 1) Task accuracy + BERTScore (reference-based) ---
+    # Task accuracy + BERTScore
     for ex in examples:
         has_ref = ex.reference_answer is not None
         for key in MODEL_KEYS:
             ans = ex.answers.get(key, "")
             answers_per_model[key].append(ans)
+
             if has_ref:
                 metrics[key].total_with_reference += 1
                 ref = ex.reference_answer or ""
-                # exact
                 if normalize_text(ans) == normalize_text(ref):
                     metrics[key].exact_matches += 1
-                # relaxed: ref が ans に含まれる or ans が ref に含まれる
                 if normalize_text(ref) in normalize_text(ans) or normalize_text(ans) in normalize_text(ref):
                     metrics[key].relaxed_matches += 1
                 refs_for_bertscore[key].append(ref)
@@ -314,15 +268,26 @@ def evaluate_models(
             refs = refs_for_bertscore[key]
             cands = answers_per_model[key][: len(refs)]
             if refs and cands:
-                f1_list = compute_bertscore(refs, cands, lang=bert_lang)
-                metrics[key].bert_f1_scores.extend(f1_list)
+                metrics[key].bert_f1_scores.extend(
+                    compute_bertscore(refs, cands, lang=bert_lang)
+                )
 
-    # --- 2) LLM-as-a-Judge + hallucination rate ---
-    if judge_model_name is not None and _HAS_OPENAI:
-        openai.api_key = os.getenv("OPENAI_API_KEY", "")
-        if not openai.api_key:
-            print("[WARN] OPENAI_API_KEY is not set. Skipping LLM-as-a-Judge.")
-        else:
+    # LLM-as-a-Judge
+    if judge_model_name and _HAS_OPENAI:
+
+        # 1) .env / 環境変数から取得
+        api_key = os.getenv("OPENAI_API_KEY", "").strip()
+
+        # 2) それでも無ければ対話的に入力（Colab / Notebook）
+        if not api_key:
+            try:
+                from getpass import getpass
+                api_key = getpass("Enter OpenAI API key (hidden): ").strip()
+            except Exception:
+                api_key = ""
+
+        if api_key:
+            openai.api_key = api_key
             for ex in examples:
                 context_text = "\n\n".join(c["text"] for c in ex.contexts)
                 judge_res = call_judge_llm_openai(
@@ -333,68 +298,49 @@ def evaluate_models(
                 )
                 scores = judge_res.get("scores", {})
                 hallucinations = judge_res.get("hallucinations", {})
+
                 for key in MODEL_KEYS:
                     if key in scores:
                         metrics[key].judge_scores.append(float(scores[key]))
                     if key in hallucinations:
                         metrics[key].hallucination_flags.append(bool(hallucinations[key]))
+        else:
+            print("[WARN] No API key provided. Skipping Judge metrics.")
 
-    # --- 3) RAGAS faithfulness ---
-    ragas_scores: Dict[str, Optional[float]] = {}
+    # RAGAS
+    ragas_scores = {}
     if use_ragas:
         ragas_scores = compute_ragas_faithfulness(examples, answers_per_model)
 
-    # --- aggregate ---
-    summary: Dict[str, Dict[str, Any]] = {}
+    summary = {}
     for key in MODEL_KEYS:
         base = metrics[key].to_summary()
         if use_ragas:
             base["ragas_faithfulness"] = ragas_scores.get(key)
         summary[key] = base
+
     return summary
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Evaluate ft_full / ft_lora / ft_qlora on multiple metrics."
+        description="Evaluate ft_full / ft_lora / ft_qlora across metrics."
     )
-    parser.add_argument(
-        "--data_path",
-        type=str,
-        required=True,
-        help="Path to JSONL file with evaluation examples.",
-    )
-    parser.add_argument(
-        "--judge_model",
-        type=str,
-        default=None,
-        help="OpenAI chat model name for LLM-as-a-Judge (e.g., gpt-4o). "
-             "If not set or openai not available, judge metrics are skipped.",
-    )
-    parser.add_argument(
-        "--bert_lang",
-        type=str,
-        default="en",
-        help="Language code for BERTScore (e.g., 'en', 'ja').",
-    )
-    parser.add_argument(
-        "--use_ragas",
-        action="store_true",
-        help="If set, compute RAGAS faithfulness (requires ragas).",
-    )
-    parser.add_argument(
-        "--output_path",
-        type=str,
-        default="model_metrics.json",
-        help="Where to save aggregated metrics as JSON.",
-    )
+    parser.add_argument("--data_path", type=str, required=True)
+    parser.add_argument("--judge_model", type=str, default=None)
+    parser.add_argument("--bert_lang", type=str, default="en")
+    parser.add_argument("--use_ragas", action="store_true")
+    parser.add_argument("--output_path", type=str, default="model_metrics.json")
     args = parser.parse_args()
 
-    exs = load_examples(args.data_path)
-    print(f"Loaded {len(exs)} examples from {args.data_path}")
+    if _HAS_DOTENV:
+        load_dotenv()
+
+    examples = load_examples(args.data_path)
+    print(f"Loaded {len(examples)} examples from {args.data_path}")
 
     summary = evaluate_models(
-        exs,
+        examples,
         judge_model_name=args.judge_model,
         bert_lang=args.bert_lang,
         use_ragas=args.use_ragas,
@@ -403,11 +349,12 @@ def main() -> None:
     print("\n=== Model Metrics Summary ===")
     for key, metrics in summary.items():
         print(f"\n[{key}]")
-        for mname, val in metrics.items():
-            print(f"  {mname}: {val}")
+        for m, v in metrics.items():
+            print(f"  {m}: {v}")
 
     with open(args.output_path, "w", encoding="utf-8") as f:
         json.dump(summary, f, ensure_ascii=False, indent=2)
+
     print(f"\nSaved metrics to {args.output_path}")
 
 

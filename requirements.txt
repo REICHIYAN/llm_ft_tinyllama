@@ -1,18 +1,30 @@
+# Core
 torch>=2.1.0
 transformers>=4.39.0
 accelerate>=0.27.0
 sentencepiece>=0.1.99
 einops>=0.7.0
 
+# Training / PEFT
 datasets>=2.18.0
 peft>=0.10.0
 bitsandbytes>=0.42.0
 
+# RAG / Agents
 langchain>=0.2.0
 langchain-openai>=0.1.0
 llama-index>=0.10.0
-
-vllm>=0.4.0
-python-dotenv>=1.0.0
 llama-index-embeddings-huggingface
 sentence-transformers
+
+# Inference (Judgeをローカルで動かす用)
+vllm>=0.4.0
+
+# Config
+python-dotenv>=1.0.0
+
+# Evaluation
+ragas
+datasets       # ragas が依存しているので明示
+evaluate
+bert-score
