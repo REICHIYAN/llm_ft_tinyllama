@@ -1,44 +1,40 @@
-TinyLlama Fine-Tuning Toolkit
+# TinyLlama Fine-Tuning Toolkit
 
-A compact, reproducible toolkit for fine-tuning, evaluating, and comparing
+A compact, reproducible toolkit for fine-tuning, evaluating, and comparing  
 TinyLlama-1.1B-Chat-v1.0 using Full FT, LoRA, and QLoRA.
 
-The project is designed for small-GPU environments, research experimentation,
+The project is designed for small-GPU environments, research experimentation,  
 and transparent ablation studies.
 
-Features
-🔧 Fine-Tuning
+---
 
-Full Fine-Tuning
+## Features
 
-LoRA
+### 🔧 Fine-Tuning
+- Full Fine-Tuning  
+- LoRA  
+- QLoRA  
+- Shared training utilities (`training_utils.py`)
 
-QLoRA
+### 📘 Evaluation Tools
+- RAG evaluation (LlamaIndex / LangChain)  
+- Retrieval-only metrics  
+- Model comparison (FT / LoRA / QLoRA)  
+- Local inference script (`local_hf_chat_model.py`)
 
-Shared training utilities (training_utils.py)
+### 🗂 Sample Data
+- RAG document samples  
+- Small QA datasets  
 
-📘 Evaluation Tools
+**Note:** Prefix Tuning is intentionally excluded.
 
-RAG evaluation（LlamaIndex / LangChain）
+---
 
-Retrieval-only metrics
+## Repository Structure
 
-Model comparison（FT / LoRA / QLoRA）
+*(excluding `.env` and `.gitignore`)*
 
-Local inference script (local_hf_chat_model.py)
-
-🗂 Sample Data
-
-RAG document samples
-
-Small QA datasets
-
-Note: Prefix Tuning is intentionally excluded.
-
-Repository Structure
-
-（.env と .gitignore は除外）
-
+```
 llm_ft_tinyllama/
 ├── app_rag_compare.py
 ├── app_rag_compare_langchain.py
@@ -65,88 +61,108 @@ llm_ft_tinyllama/
 └── docs/
     ├── sample1.txt
     └── sample2.txt
+```
 
-Fine-Tuning Scripts
-Full Fine-Tuning
+---
 
+## Fine-Tuning Scripts
+
+### Full Fine-Tuning  
 Updates all parameters.
 
+```bash
 python train_full.py
+```
 
-LoRA
-
+### LoRA  
 Parameter-efficient training with injected low-rank matrices.
 
+```bash
 python train_lora.py
+```
 
-QLoRA
-
+### QLoRA  
 4-bit quantized base model + LoRA adapters.
 
+```bash
 python train_qlora.py
+```
 
-Training Utilities
+---
 
-training_utils.py includes:
+## Training Utilities
 
-dataset loading
+`training_utils.py` includes:
 
-tokenizer setup
-
-model initialization
-
-training arguments
-
-evaluation hooks
+- dataset loading  
+- tokenizer setup  
+- model initialization  
+- training arguments  
+- evaluation hooks  
 
 All training scripts share this module for consistent behavior.
 
-RAG Evaluation
-LlamaIndex Pipeline
+---
 
-File: app_rag_compare_llamaindex.py
+## RAG Evaluation
 
+### LlamaIndex Pipeline
+**File:** `app_rag_compare_llamaindex.py`
+
+```bash
 python app_rag_compare.py     --docs_dir docs     --question "Explain LoRA."
+```
 
-LangChain Pipeline
+### LangChain Pipeline
+**File:** `app_rag_compare_langchain.py`  
+Compatible with LangChain 0.2+ (Runnable / LCEL).
 
-File: app_rag_compare_langchain.py
-Compatible with LangChain 0.2+（Runnable / LCEL）。
+---
 
-Model Comparison
+## Model Comparison
 
 Compare FT / LoRA / QLoRA generations:
 
+```bash
 python compare_adapters.py
+```
 
 Outputs:
+- aligned generations  
+- qualitative differences  
+- optional latency comparison  
 
-aligned generations
+---
 
-qualitative differences
+## Retrieval-Only Metrics
 
-optional latency comparison
-
-Retrieval-Only Metrics
+```bash
 python eval_retrieval.py --data data/sample_eval.jsonl
+```
 
 Metrics:
+- recall@k  
+- precision@k  
+- hit-rate  
 
-recall@k
+---
 
-precision@k
+## Sample Data
 
-hit-rate
-
-Sample Data
+```
 data/toy_qa.jsonl
 data/sample_eval.jsonl
 docs/sample1.txt
 docs/sample2.txt
+```
 
 Useful for RAG demonstrations and baseline evaluations.
 
-Requirements
+---
+
+## Requirements
+
+```
 torch>=2.1.0
 transformers>=4.39.0
 accelerate>=0.27.0
@@ -164,7 +180,12 @@ llama-index-embeddings-huggingface
 sentence-transformers
 
 python-dotenv>=1.0.0
+```
 
-Install:
+---
 
+## Install
+
+```bash
 pip install -r requirements.txt
+```
