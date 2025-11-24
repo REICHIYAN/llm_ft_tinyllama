@@ -5,11 +5,9 @@
 eval_models.py
 
 Evaluate three models (ft_full, ft_lora, ft_qlora) on:
-1. LLM-as-a-Judge score (requires OpenAI-compatible LLM; optional)
-2. BERTScore-F1 (requires bert-score; optional)
-3. Task accuracy (exact / relaxed match; always available if reference exists)
-4. RAGAS faithfulness (requires ragas + LLM config; optional)
-5. Hallucination rate (requires judge LLM; optional)
+1. BERTScore-F1 (requires bert-score; optional)
+2. Task accuracy (exact / relaxed match; always available if reference exists)
+3. RAGAS faithfulness (requires ragas + LLM config; optional)
 
 Input: JSONL file, each line:
 {
@@ -31,11 +29,10 @@ Input: JSONL file, each line:
 
 import argparse
 import json
-import os
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 
-# Optional dependencies (requirements.txt に合わせて、すべて「無ければスキップ」運用)
+# Optional dependencies（無ければ該当指標はスキップ）
 try:
     from bert_score import score as bert_score
     _HAS_BERTSCORE = True
@@ -49,49 +46,6 @@ try:
     _HAS_RAGAS = True
 except Exception:
     _HAS_RAGAS = False
-
-try:
-    # OpenAI Python SDK v1 (オプション / 外部依存)
-    from openai import OpenAI
-    _HAS_OPENAI = True
-except Exception:
-    _HAS_OPENAI = False
-
-try:
-    from dotenv import load_dotenv
-    _HAS_DOTENV = True
-except Exception:
-    _HAS_DOTENV = False
-
-
-def load_api_key() -> Optional[str]:
-    """
-    Load and validate OpenAI API key from environment or interactive input.
-
-    Returns:
-        str | None: Valid API key string, or None if not available / invalid.
-    """
-    # 1) Environment / .env
-    key = os.getenv("OPENAI_API_KEY", "")
-    if key:
-        key = key.strip()
-        # Simple sanity check: length & no spaces
-        if len(key) > 20 and " " not in key:
-            return key
-        print("[WARN] OPENAI_API_KEY found but seems invalid. Ignoring it.")
-
-    # 2) Interactive input (e.g., Colab)
-    try:
-        from getpass import getpass
-        key = getpass("Enter OpenAI API key (hidden): ").strip()
-    except Exception:
-        return None
-
-    if len(key) <= 20 or " " in key:
-        print("[ERROR] Provided API key seems invalid (too short or contains spaces).")
-        return None
-
-    return key
 
 
 # プロジェクト内の命名に合わせて固定
@@ -110,30 +64,20 @@ class Example:
 
 @dataclass
 class ModelMetrics:
-    judge_scores: List[float]
-    hallucination_flags: List[bool]
     bert_f1_scores: List[float]
     exact_matches: int
     relaxed_matches: int
     total_with_reference: int
 
     def __init__(self) -> None:
-        self.judge_scores = []
-        self.hallucination_flags = []
         self.bert_f1_scores = []
         self.exact_matches = 0
         self.relaxed_matches = 0
         self.total_with_reference = 0
 
     def to_summary(self) -> Dict[str, Any]:
-        n_judge = len(self.judge_scores)
         n_bert = len(self.bert_f1_scores)
-        n_hall = len(self.hallucination_flags)
         return {
-            "judge_score_mean": (sum(self.judge_scores) / n_judge) if n_judge > 0 else None,
-            "judge_score_count": n_judge,
-            "hallucination_rate": (sum(self.hallucination_flags) / n_hall) if n_hall > 0 else None,
-            "hallucination_count": n_hall,
             "bertscore_f1_mean": (sum(self.bert_f1_scores) / n_bert) if n_bert > 0 else None,
             "bertscore_f1_count": n_bert,
             "exact_accuracy": (
@@ -169,55 +113,6 @@ def load_examples(path: str) -> List[Example]:
             )
             examples.append(ex)
     return examples
-
-
-# ---------------- LLM-as-a-Judge utilities -----------------
-
-
-def call_judge_llm_openai(
-    client: "OpenAI",
-    question: str,
-    context: str,
-    answers: Dict[str, str],
-    model: str,
-    temperature: float = 0.0,
-) -> Dict[str, Any]:
-    """
-    Call OpenAI Chat Completions API (v1 client) as a judge.
-
-    Returns a dict:
-    {
-      "scores": {"ft_full": 8.5, "ft_lora": 8.0, "ft_qlora": 7.2},
-      "hallucinations": {"ft_full": false, "ft_lora": true, ...}
-    }
-    """
-    prompt = (
-        "You are an impartial evaluator.\n"
-        "Given a question, supporting context, and three model answers, "
-        "rate each answer from 0 to 10 and mark whether it contains hallucinations.\n\n"
-        "Return ONLY valid JSON:\n"
-        "{\n"
-        '  \"scores\": {\"ft_full\": 0-10, \"ft_lora\": 0-10, \"ft_qlora\": 0-10},\n'
-        '  \"hallucinations\": {\"ft_full\": true/false, \"ft_lora\": true/false, \"ft_qlora\": true/false}\n'
-        "}\n\n"
-        f"Question:\n{question}\n\nContext:\n{context}\n\n"
-    )
-
-    for key in MODEL_KEYS:
-        prompt += f"Answer ({key}):\n{answers.get(key, '')}\n\n"
-
-    resp = client.chat.completions.create(
-        model=model,
-        messages=[{"role": "user", "content": prompt}],
-        temperature=temperature,
-    )
-
-    content = resp.choices[0].message.content
-    try:
-        return json.loads(content)
-    except Exception:
-        # JSON パースに失敗した場合は空結果を返す（集計側で無視される）
-        return {"scores": {}, "hallucinations": {}}
 
 
 # ---------------- RAGAS utilities -----------------
@@ -294,7 +189,6 @@ def normalize_text(s: str) -> str:
 
 def evaluate_models(
     examples: List[Example],
-    judge_model_name: Optional[str] = None,
     bert_lang: str = "en",
     use_ragas: bool = False,
 ) -> Dict[str, Dict[str, Any]]:
@@ -339,38 +233,6 @@ def evaluate_models(
                     compute_bertscore(refs, cands, lang=bert_lang)
                 )
 
-    # LLM-as-a-Judge (OpenAI v1 client)
-    if judge_model_name and _HAS_OPENAI:
-        api_key = load_api_key()
-        if api_key:
-            client = OpenAI(api_key=api_key)
-            for ex in examples:
-                context_text = "\n\n".join(c.get("text", "") for c in ex.contexts)
-                try:
-                    judge_res = call_judge_llm_openai(
-                        client=client,
-                        question=ex.question,
-                        context=context_text,
-                        answers=ex.answers,
-                        model=judge_model_name,
-                    )
-                except Exception as e:
-                    print(f"[WARN] Judge call failed for qid={ex.qid}: {e}")
-                    continue
-
-                scores = judge_res.get("scores", {})
-                hallucinations = judge_res.get("hallucinations", {})
-
-                for key in MODEL_KEYS:
-                    if key in scores:
-                        metrics[key].judge_scores.append(float(scores[key]))
-                    if key in hallucinations:
-                        metrics[key].hallucination_flags.append(bool(hallucinations[key]))
-        else:
-            print("[WARN] Valid OPENAI_API_KEY not provided. Skipping Judge metrics.")
-    elif judge_model_name and not _HAS_OPENAI:
-        print("[WARN] openai package (v1) is not installed. Skipping Judge metrics.")
-
     # RAGAS
     ragas_scores: Dict[str, Optional[float]] = {}
     if use_ragas:
@@ -397,12 +259,6 @@ def main() -> None:
         help="Input JSONL path (e.g. data/sample_eval.jsonl)",
     )
     parser.add_argument(
-        "--judge_model",
-        type=str,
-        default=None,
-        help="Optional OpenAI judge model name (e.g. gpt-4.1-mini).",
-    )
-    parser.add_argument(
         "--bert_lang",
         type=str,
         default="en",
@@ -421,15 +277,11 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    if _HAS_DOTENV:
-        load_dotenv()
-
     examples = load_examples(args.data_path)
     print(f"Loaded {len(examples)} examples from {args.data_path}")
 
     summary = evaluate_models(
         examples,
-        judge_model_name=args.judge_model,
         bert_lang=args.bert_lang,
         use_ragas=args.use_ragas,
     )
