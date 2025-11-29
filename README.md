@@ -1,4 +1,4 @@
-# TinyLlama Fine-Tuning Toolkit
+# FT-Lab
 
 A compact, reproducible toolkit for fine-tuning, evaluating, and comparing  
 TinyLlama-1.1B-Chat-v1.0 using Full FT, LoRA, and QLoRA.
@@ -33,7 +33,7 @@ and transparent ablation studies.
 ## Repository Structure
 
 ```
-llm_ft_tinyllama/
+ft_lab/
 ├── app_rag_compare.py
 ├── app_rag_compare_langchain.py
 ├── app_rag_compare_llamaindex.py

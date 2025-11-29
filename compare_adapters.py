@@ -14,7 +14,7 @@ from peft import PeftModel
 # ---------------------------------------------------------------
 # 設定
 # ---------------------------------------------------------------
-REPO_ROOT = "/content/llm_ft_tinyllama"
+REPO_ROOT = "/content/ft_lab"
 
 model_dirs = {
     "base_full": f"{REPO_ROOT}/models/ft_full",      # Full Fine-tuning
