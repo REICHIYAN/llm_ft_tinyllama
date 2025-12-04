@@ -56,9 +56,12 @@ ft_lab/
 │   ├── toy_qa.jsonl
 │   └── sample_eval.jsonl
 │
-└── docs/
-    ├── sample1.txt
-    └── sample2.txt
+├── docs/
+│   ├── sample1.txt
+│   └── sample2.txt	
+│
+└── examples/
+     └── FT-Lab.ipynb
 ```
 
 ---
@@ -166,6 +169,22 @@ docs/sample2.txt
 ```
 
 Useful for RAG demonstrations and baseline evaluations.
+
+---
+
+## Running the Colab Demo
+
+A runnable notebook is available under:
+
+```
+examples/FT-Lab.ipynb
+```
+
+This notebook:
+- uses only dummy data
+- demonstrates the end-to-end pipeline
+- is designed for Colab / T4 / small VRAM
+- can be fully replaced with real datasets
 
 ---
 
